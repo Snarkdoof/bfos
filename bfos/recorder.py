@@ -12,11 +12,13 @@ class Recorder:
     Subscribes to all events on the SpannerBus and records them chronologically
     into a local SQLite database. Uses WAL journal mode for lightweight, concurrent,
     and power-failure-resilient transactional logging.
+    Supports parameter-based automatic data retention to prevent full disks.
     """
-    def __init__(self, db_path: str, bus: SpannerBus, pattern: str = "*"):
+    def __init__(self, db_path: str, bus: SpannerBus, pattern: str = "*", retention_seconds: Optional[float] = None):
         self._db_path = db_path
         self._bus = bus
         self._pattern = pattern
+        self._retention_seconds = retention_seconds
         self._queue: asyncio.Queue = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
@@ -42,6 +44,15 @@ class Recorder:
         """)
         # Index on timestamp for time-accurate fast querying during playback
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON telemetry (timestamp);")
+        
+        # If retention policy is active, prune old data on startup
+        if self._retention_seconds is not None:
+            import time
+            cutoff = time.time() - self._retention_seconds
+            self._conn.execute("DELETE FROM telemetry WHERE timestamp < ?;", (cutoff,))
+            # Force incremental vacuum or autocommit prune
+            self._conn.execute("PRAGMA incremental_vacuum;")
+            
         self._conn.commit()
         logger.info("Initialized SQLite telemetry recording database at '%s'", self._db_path)
 
@@ -135,6 +146,11 @@ class Recorder:
                             "INSERT INTO telemetry (timestamp, topic, payload) VALUES (?, ?, ?);",
                             rows
                         )
+                        # Periodically prune old data inside the write transaction if policy is active
+                        if self._retention_seconds is not None:
+                            import time
+                            cutoff = time.time() - self._retention_seconds
+                            self._conn.execute("DELETE FROM telemetry WHERE timestamp < ?;", (cutoff,))
                         self._conn.commit()
                 except Exception as e:
                     logger.error("SQLite batch write error: %s", e)

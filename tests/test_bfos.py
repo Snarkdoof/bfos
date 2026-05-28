@@ -379,6 +379,59 @@ class TestBFOS(unittest.TestCase):
                 self.assertEqual(cfg_recovered.get("param1"), "value1")
                 self.assertEqual(cfg_recovered.get("param2"), 42)
 
+    def test_recorder_data_retention(self):
+        """Test that data retention policies prune old records on startup and during execution."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "telemetry_retention.db")
+            
+            async def run():
+                # 1. Pre-populate database with ancient records
+                conn = sqlite3.connect(db_path)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS telemetry (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL NOT NULL,
+                        topic TEXT NOT NULL,
+                        payload TEXT NOT NULL
+                    );
+                """)
+                now = time.time()
+                # 2 seconds old and 10 seconds old
+                conn.execute("INSERT INTO telemetry (timestamp, topic, payload) VALUES (?, ?, ?);", (now - 2.0, "status/old", "{}"))
+                conn.execute("INSERT INTO telemetry (timestamp, topic, payload) VALUES (?, ?, ?);", (now - 10.0, "status/ancient", "{}"))
+                conn.commit()
+                conn.close()
+
+                # Initialize Recorder with 5 second retention
+                # This should prune the 10s old record on startup but keep the 2s old record
+                recorder = Recorder(db_path, self.bus, retention_seconds=5.0)
+                await recorder.start()
+
+                # Verify startup pruning
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT topic FROM telemetry;")
+                topics = [r[0] for r in cursor.fetchall()]
+                conn.close()
+                self.assertIn("status/old", topics)
+                self.assertNotIn("status/ancient", topics)
+
+                # Now publish another event, driving a write batch transaction and triggering periodic pruning.
+                # Use a custom payload containing an old timestamp simulating expired historical tracking
+                await self.bus.publish("status/new_expired", {"timestamp": now - 15.0, "value": "prune_me"})
+                await asyncio.sleep(0.1)
+
+                await recorder.stop()
+
+                # Verify dynamic runtime pruning deleted the expired new event
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT topic FROM telemetry;")
+                final_topics = [r[0] for r in cursor.fetchall()]
+                conn.close()
+                self.assertNotIn("status/new_expired", final_topics)
+
             self.loop.run_until_complete(run())
 
 if __name__ == "__main__":
