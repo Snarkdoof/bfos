@@ -93,6 +93,14 @@ class Config:
                 # No running event loop, ignore publish reload notification
                 pass
 
+    def set_default(self, key: str, value: Any) -> None:
+        """
+        Set a configuration parameter default if it is not already present.
+        Writes atomically to disk and publishes a dynamic reload notification to the bus.
+        """
+        if key not in self._config_data:
+            self.set(key, value)
+
     def delete(self, key: str) -> None:
         """Delete a configuration parameter."""
         if key in self._config_data:
