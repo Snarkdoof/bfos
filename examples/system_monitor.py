@@ -1,8 +1,13 @@
 import asyncio
 import os
+import sys
 import shutil
 import logging
 import time
+
+# Ensure parent directory is in sys.path so bfos module is findable
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from bfos import SpannerBus, StatusTracker, Recorder, setup_logging
 
 # Configure logging to go both to stdout and to the bus structured
@@ -72,7 +77,7 @@ async def monitor_loop(bus: SpannerBus, status: StatusTracker):
 async def main():
     # Setup bus and redirect standard logging output directly onto the bus log topics
     bus = SpannerBus()
-    setup_logging(bus, log_level=logging.INFO)
+    setup_logging(bus, level=logging.INFO)
 
     # Status tracker prefixes all variables with status/monitor/
     status = StatusTracker(bus, prefix="status/monitor")
