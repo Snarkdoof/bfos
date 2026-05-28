@@ -16,18 +16,32 @@ class Config:
         self._filepath = os.path.abspath(filepath)
         self._bus = bus
         self._config_data: Dict[str, Any] = {}
+        self._last_mtime = 0.0
         self._load()
+
+    def _check_reload(self) -> None:
+        """Reload config from disk if file has been modified externally."""
+        if os.path.exists(self._filepath):
+            try:
+                mtime = os.path.getmtime(self._filepath)
+                if mtime > self._last_mtime:
+                    self._load()
+            except Exception:
+                pass
 
     def _load(self) -> None:
         """Load configuration from disk. Safely handles missing/corrupt files."""
         if not os.path.exists(self._filepath):
             logger.info("Config file '%s' not found. Starting with empty configuration.", self._filepath)
             self._config_data = {}
+            self._last_mtime = 0.0
             return
 
         try:
+            mtime = os.path.getmtime(self._filepath)
             with open(self._filepath, "r", encoding="utf-8") as f:
                 self._config_data = json.load(f)
+            self._last_mtime = mtime
             logger.debug("Loaded config from '%s'", self._filepath)
         except Exception as e:
             logger.error("Failed to read config from '%s': %s. Initializing empty.", self._filepath, e)
@@ -67,6 +81,7 @@ class Config:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Retrieve a configuration parameter."""
+        self._check_reload()
         return self._config_data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
@@ -74,6 +89,7 @@ class Config:
         Set a configuration parameter.
         Writes atomically to disk and publishes a dynamic reload notification to the bus.
         """
+        self._check_reload()
         old_value = self._config_data.get(key)
         if old_value != value:
             self._config_data[key] = value
@@ -98,11 +114,13 @@ class Config:
         Set a configuration parameter default if it is not already present.
         Writes atomically to disk and publishes a dynamic reload notification to the bus.
         """
+        self._check_reload()
         if key not in self._config_data:
             self.set(key, value)
 
     def delete(self, key: str) -> None:
         """Delete a configuration parameter."""
+        self._check_reload()
         if key in self._config_data:
             del self._config_data[key]
             self._save()
@@ -121,4 +139,5 @@ class Config:
 
     def all(self) -> Dict[str, Any]:
         """Return a copy of the entire configuration dictionary."""
+        self._check_reload()
         return self._config_data.copy()

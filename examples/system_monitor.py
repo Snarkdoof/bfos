@@ -16,8 +16,8 @@ logger = bfos.get_logger("system_monitor")
 config = bfos.get_config("system_monitor_config.json")
 
 # Seed standard configuration defaults if they do not exist
-config.set_default("loop_interval", 2.0)
-config.set_default("mount_point", "/")
+config.set_default("system_monitor.refresh_rate", 2.0)
+config.set_default("system_monitor.mount_point", "/")
 
 async def monitor_loop():
     """Periodically queries system health and publishes updates directly via the zero-scaffolding API."""
@@ -28,8 +28,8 @@ async def monitor_loop():
     while True:
         try:
             # Dynamically read config values on each iteration to support on-the-fly changes
-            loop_interval = float(config.get("loop_interval", 2.0))
-            mount_point = str(config.get("mount_point", "/"))
+            loop_interval = float(config.get("system_monitor.refresh_rate", 2.0))
+            mount_point = str(config.get("system_monitor.mount_point", "/"))
 
             # Log change in mount point configuration if modified
             if mount_point != last_mount_point:

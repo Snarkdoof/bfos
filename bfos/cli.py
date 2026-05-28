@@ -8,8 +8,9 @@ import time
 from typing import Dict, Any, List
 
 class CursesMonitor:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, config_path: str = "system_monitor_config.json"):
         self.db_path = db_path
+        self.config_path = config_path
         self.running = True
         self.telemetry_data: Dict[str, Any] = {}
         self.logs = []
@@ -26,29 +27,66 @@ class CursesMonitor:
         self.collapsed_configs = set()
         self.config_selected_index = 0
         self.confirming_clear = False
+        self.confirming_delete = False
 
-        # Seed local configurations initially from standard files if present
-        for cfg_file in ["system_monitor_config.json", "config.json"]:
-            if os.path.exists(cfg_file):
+        # Load configurations using standard bfos.Config
+        from bfos.bus import SpannerBus
+        from bfos.config import Config
+        self.bus = SpannerBus()
+        if not os.path.exists(self.config_path) and os.path.exists("config.json"):
+            self.config_path = "config.json"
+        self.config_manager = Config(self.config_path, self.bus)
+        self.configs = self.config_manager.all()
+
+    def read_string(self, stdscr, prompt_str) -> str:
+        """Helper to read a string in curses with standard echo/cursor support."""
+        curses.curs_set(1)
+        curses.echo()
+        height, width = stdscr.getmaxyx()
+        stdscr.move(height - 2, 2)
+        stdscr.clrtoeol()
+        stdscr.addstr(height - 2, 2, prompt_str, curses.color_pair(3) | curses.A_BOLD)
+        stdscr.refresh()
+        try:
+            res = stdscr.getstr(height - 2, 2 + len(prompt_str))
+            val_str = res.decode("utf-8").strip()
+        except Exception:
+            val_str = ""
+        curses.noecho()
+        curses.curs_set(0)
+        return val_str
+
+    def parse_input_value(self, val_str: str) -> Any:
+        """Parses inputs intelligently into types."""
+        if val_str.lower() == "true":
+            return True
+        if val_str.lower() == "false":
+            return False
+        try:
+            if "." in val_str:
+                return float(val_str)
+            return int(val_str)
+        except ValueError:
+            if (val_str.startswith("{") and val_str.endswith("}")) or (val_str.startswith("[") and val_str.endswith("]")):
                 try:
-                    with open(cfg_file, "r") as f:
-                        data = json.load(f)
-                        for k, v in data.items():
-                            self.configs[k] = v
+                    return json.loads(val_str)
                 except Exception:
                     pass
+            return val_str
 
     def get_config_tree_lines(self) -> List[Dict[str, Any]]:
         """Parses flat configurations and builds a sorted, collapsible tree structure."""
         tree = {}
+        original_keys = {}
         for key, val in self.configs.items():
-            parts = key.split("/")
+            parts = key.replace(".", "/").split("/")
             curr = tree
             for part in parts[:-1]:
                 if part not in curr:
                     curr[part] = {}
                 curr = curr[part]
             curr[parts[-1]] = val
+            original_keys[tuple(parts)] = key
 
         lines = []
         def traverse(node: dict, current_path_parts: list, depth: int):
@@ -56,10 +94,12 @@ class CursesMonitor:
                 val = node[name]
                 path_parts = current_path_parts + [name]
                 full_path = "/".join(path_parts)
+                orig_key = original_keys.get(tuple(path_parts), full_path)
                 if isinstance(val, dict):
                     collapsed = full_path in self.collapsed_configs
                     lines.append({
                         "full_path": full_path,
+                        "original_key": orig_key,
                         "name": name,
                         "is_namespace": True,
                         "depth": depth,
@@ -70,6 +110,7 @@ class CursesMonitor:
                 else:
                     lines.append({
                         "full_path": full_path,
+                        "original_key": orig_key,
                         "name": name,
                         "is_namespace": False,
                         "depth": depth,
@@ -164,6 +205,9 @@ class CursesMonitor:
             pass
         except Exception:
             pass
+        
+        # Always sync with disk Config manager (handles external file modifications dynamically)
+        self.configs = self.config_manager.all()
 
     def draw_screen(self, stdscr):
         """Main redraw curses execution logic."""
@@ -300,8 +344,14 @@ class CursesMonitor:
                 prompt_str = " ⚠️  CONFIRM CLEAR DATABASE? All recorded telemetry rows will be deleted. (y/N): "
                 # Render in red reversed alert style
                 stdscr.addstr(height - 2, 2, f"{prompt_str:<76}", curses.color_pair(4) | curses.A_BOLD | curses.A_REVERSE)
+            elif self.confirming_delete:
+                if tree_lines and 0 <= self.config_selected_index < len(tree_lines):
+                    node = tree_lines[self.config_selected_index]
+                    orig_key = node["original_key"]
+                    prompt_str = f" ⚠️  CONFIRM DELETE CONFIG '{orig_key}'? (y/N): "
+                    stdscr.addstr(height - 2, 2, f"{prompt_str:<76}", curses.color_pair(4) | curses.A_BOLD | curses.A_REVERSE)
             else:
-                stdscr.addstr(height - 2, 2, "Arrows/WS: Select | Space/Enter: Expand | L: Level | C: Clear DB | Q: Exit", curses.A_DIM)
+                stdscr.addstr(height - 2, 2, "Arrows/WS: Nav | Enter: Edit/Toggle | Space: Expand | D: Del | A: Add | C: Clear DB | Q: Exit", curses.A_DIM)
                 
             stdscr.refresh()
 
@@ -314,6 +364,14 @@ class CursesMonitor:
                         self.confirming_clear = False
                     elif ch in [ord('n'), ord('N'), 27]: # Esc or N/n
                         self.confirming_clear = False
+                elif self.confirming_delete:
+                    if ch in [ord('y'), ord('Y')]:
+                        if tree_lines and 0 <= self.config_selected_index < len(tree_lines):
+                            node = tree_lines[self.config_selected_index]
+                            self.config_manager.delete(node["original_key"])
+                        self.confirming_delete = False
+                    elif ch in [ord('n'), ord('N'), 27]:
+                        self.confirming_delete = False
                 else:
                     if ch == ord('q') or ch == ord('Q'):
                         self.running = False
@@ -321,11 +379,39 @@ class CursesMonitor:
                         self.level_index = (self.level_index + 1) % len(self.levels_list)
                     elif ch == ord('c') or ch == ord('C'):
                         self.confirming_clear = True
+                    elif ch in [ord('d'), ord('D')]:
+                        if tree_lines and 0 <= self.config_selected_index < len(tree_lines):
+                            node = tree_lines[self.config_selected_index]
+                            if not node["is_namespace"]:
+                                self.confirming_delete = True
+                    elif ch in [ord('a'), ord('A')]:
+                        new_key = self.read_string(stdscr, "Add config key name: ")
+                        if new_key:
+                            new_val_str = self.read_string(stdscr, f"Value for '{new_key}': ")
+                            parsed_val = self.parse_input_value(new_val_str)
+                            self.config_manager.set(new_key, parsed_val)
                     elif ch in [curses.KEY_UP, ord('w'), ord('W')]:
                         self.config_selected_index = max(0, self.config_selected_index - 1)
                     elif ch in [curses.KEY_DOWN, ord('s'), ord('S')]:
                         self.config_selected_index = min(len(tree_lines) - 1, self.config_selected_index + 1)
-                    elif ch in [10, 13, 32]: # Enter/Space
+                    elif ch in [10, 13]: # Enter
+                        if tree_lines and 0 <= self.config_selected_index < len(tree_lines):
+                            node = tree_lines[self.config_selected_index]
+                            if node["is_namespace"]:
+                                path = node["full_path"]
+                                if path in self.collapsed_configs:
+                                    self.collapsed_configs.remove(path)
+                                else:
+                                    self.collapsed_configs.add(path)
+                            else:
+                                # Enter on leaf edit value
+                                orig_key = node["original_key"]
+                                current_val = node["value"]
+                                val_str = self.read_string(stdscr, f"Edit {orig_key} (current: {current_val}): ")
+                                if val_str:
+                                    parsed_val = self.parse_input_value(val_str)
+                                    self.config_manager.set(orig_key, parsed_val)
+                    elif ch == 32: # Space
                         if tree_lines and 0 <= self.config_selected_index < len(tree_lines):
                             node = tree_lines[self.config_selected_index]
                             if node["is_namespace"]:
@@ -341,10 +427,13 @@ class CursesMonitor:
 
 def main():
     db_path = "system_monitor.db"
+    config_path = "system_monitor_config.json"
     if len(sys.argv) > 1:
         db_path = sys.argv[1]
+    if len(sys.argv) > 2:
+        config_path = sys.argv[2]
 
-    monitor = CursesMonitor(db_path)
+    monitor = CursesMonitor(db_path, config_path)
     
     try:
         curses.wrapper(monitor.draw_screen)

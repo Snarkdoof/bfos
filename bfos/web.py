@@ -125,6 +125,7 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
             --bg-color: #0b0f19;
@@ -417,6 +418,16 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
             </ul>
         </div>
 
+        <!-- Real-Time Telemetry Trends Card -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-header">
+                <div class="card-title">📈 Real-Time Telemetry Trends (Last 30 Mins)</div>
+            </div>
+            <div style="position: relative; height: 260px; width: 100%;">
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+
         <!-- Console Logging Terminal Container -->
         <div class="console-container">
             <div class="console-header">
@@ -470,6 +481,84 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
             return (bytes / (1024**3)).toFixed(2) + " GB";
         }
 
+        // Initialize Trend Chart using Chart.js
+        const trendCtx = document.getElementById('trendChart').getContext('2d');
+        const maxDataPoints = 1800; // 30 minutes @ 1 update/sec
+
+        const trendChart = new Chart(trendCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'CPU Load (1m)',
+                        data: [],
+                        borderColor: '#00f2fe',
+                        backgroundColor: 'rgba(0, 242, 254, 0.06)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Memory Usage (%)',
+                        data: [],
+                        borderColor: '#4facfe',
+                        backgroundColor: 'rgba(79, 172, 254, 0.06)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        yAxisID: 'y_percent'
+                    },
+                    {
+                        label: 'Disk Usage (%)',
+                        data: [],
+                        borderColor: '#ffd600',
+                        backgroundColor: 'rgba(255, 214, 0, 0.06)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        yAxisID: 'y_percent'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                        ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }
+                    },
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: { display: true, text: 'CPU Load', color: '#00f2fe' },
+                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                        ticks: { color: '#94a3b8' },
+                        suggestedMin: 0,
+                        suggestedMax: 2
+                    },
+                    y_percent: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: { display: true, text: 'Usage %', color: '#4facfe' },
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: '#94a3b8', callback: value => value + '%' },
+                        suggestedMin: 0,
+                        suggestedMax: 100
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: { color: '#f1f5f9', font: { family: 'Outfit' } }
+                    }
+                }
+            }
+        });
+
         async function updateStatus() {
             try {
                 const res = await fetch("/api/status");
@@ -478,9 +567,9 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 if (data.error) return;
 
                 // 1. Update CPU
-                const cpu1m = data["status/monitor/cpu/load_1m"]?.payload?.value || 0.0;
-                const cpu5m = data["status/monitor/cpu/load_5m"]?.payload?.value || 0.0;
-                const cpu15m = data["status/monitor/cpu/load_15m"]?.payload?.value || 0.0;
+                const cpu1m = data["status/cpu/load_1m"]?.payload?.value || data["status/cpu/load_1m"]?.payload || 0.0;
+                const cpu5m = data["status/cpu/load_5m"]?.payload?.value || data["status/cpu/load_5m"]?.payload || 0.0;
+                const cpu15m = data["status/cpu/load_15m"]?.payload?.value || data["status/cpu/load_15m"]?.payload || 0.0;
                 document.getElementById("cpu-metric").innerText = cpu1m.toFixed(2);
                 document.getElementById("cpu-5m").innerText = cpu5m.toFixed(2);
                 document.getElementById("cpu-15m").innerText = cpu15m.toFixed(2);
@@ -489,22 +578,37 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 document.getElementById("cpu-bar").style.width = `${cpuBarPct}%`;
 
                 // 2. Update Memory
-                const memPct = data["status/monitor/memory/used_percent"]?.payload?.value || 0.0;
-                const memFree = data["status/monitor/memory/free_bytes"]?.payload?.value || 0;
-                const memTotal = data["status/monitor/memory/total_bytes"]?.payload?.value || 0;
+                const memPct = data["status/memory/used_percent"]?.payload?.value || data["status/memory/used_percent"]?.payload || 0.0;
+                const memFree = data["status/memory/free_bytes"]?.payload?.value || data["status/memory/free_bytes"]?.payload || 0;
+                const memTotal = data["status/memory/total_bytes"]?.payload?.value || data["status/memory/total_bytes"]?.payload || 0;
                 document.getElementById("mem-metric").innerText = `${memPct.toFixed(1)}%`;
                 document.getElementById("mem-free").innerText = formatBytes(memFree);
                 document.getElementById("mem-total").innerText = formatBytes(memTotal);
                 document.getElementById("mem-bar").style.width = `${memPct}%`;
 
                 // 3. Update Disk
-                const diskPct = data["status/monitor/disk/used_percent"]?.payload?.value || 0.0;
-                const diskFree = data["status/monitor/disk/free_bytes"]?.payload?.value || 0;
-                const diskTotal = data["status/monitor/disk/total_bytes"]?.payload?.value || 0;
+                const diskPct = data["status/disk/used_percent"]?.payload?.value || data["status/disk/used_percent"]?.payload || 0.0;
+                const diskFree = data["status/disk/free_bytes"]?.payload?.value || data["status/disk/free_bytes"]?.payload || 0;
+                const diskTotal = data["status/disk/total_bytes"]?.payload?.value || data["status/disk/total_bytes"]?.payload || 0;
                 document.getElementById("disk-metric").innerText = `${diskPct.toFixed(1)}%`;
                 document.getElementById("disk-free").innerText = formatBytes(diskFree);
                 document.getElementById("disk-total").innerText = formatBytes(diskTotal);
                 document.getElementById("disk-bar").style.width = `${diskPct}%`;
+
+                // 4. Update Trend Chart
+                const nowStr = new Date().toLocaleTimeString();
+                trendChart.data.labels.push(nowStr);
+                trendChart.data.datasets[0].data.push(cpu1m);
+                trendChart.data.datasets[1].data.push(memPct);
+                trendChart.data.datasets[2].data.push(diskPct);
+
+                if (trendChart.data.labels.length > maxDataPoints) {
+                    trendChart.data.labels.shift();
+                    trendChart.data.datasets[0].data.shift();
+                    trendChart.data.datasets[1].data.shift();
+                    trendChart.data.datasets[2].data.shift();
+                }
+                trendChart.update('none'); // silent high-performance draw update
 
             } catch (err) {
                 console.error("Failed fetching live status: ", err);
