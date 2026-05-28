@@ -421,6 +421,15 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
         <div class="console-container">
             <div class="console-header">
                 <div class="card-title">📜 Console Active Logging</div>
+                <div>
+                    <label style="color: var(--text-dim); font-size: 0.85rem; margin-right: 0.5rem;" for="level-select">Display Level:</label>
+                    <select id="level-select" style="background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.35rem 0.75rem; font-family: inherit; font-size: 0.85rem; outline: none; cursor: pointer;">
+                        <option value="DEBUG">DEBUG+</option>
+                        <option value="INFO" selected>INFO+</option>
+                        <option value="WARNING">WARNING+</option>
+                        <option value="ERROR">ERROR+</option>
+                    </select>
+                </div>
             </div>
             <div class="console-terminal" id="terminal">
                 <!-- Live logs will append dynamically -->
@@ -431,6 +440,30 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
     <script>
         let lastLogTimestamp = 0.0;
         const terminal = document.getElementById("terminal");
+        const levelSelect = document.getElementById("level-select");
+
+        // Map severity names to values
+        const levelsMap = { "DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40 };
+
+        // Handle changes in log level filter
+        levelSelect.addEventListener("change", () => {
+            // Apply filtering immediately on all currently rendered logs
+            filterLogs();
+        });
+
+        function filterLogs() {
+            const threshold = levelsMap[levelSelect.value];
+            const entries = terminal.getElementsByClassName("log-entry");
+            for (let entry of entries) {
+                const entryLevel = entry.getAttribute("data-level");
+                const entryVal = levelsMap[entryLevel] || 20;
+                if (entryVal >= threshold) {
+                    entry.style.display = "flex";
+                } else {
+                    entry.style.display = "none";
+                }
+            }
+        }
 
         function formatBytes(bytes) {
             if (!bytes) return "0.00 GB";
@@ -483,12 +516,24 @@ class SpannerHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 const res = await fetch(`/api/logs?since=${lastLogTimestamp}`);
                 const logs = await res.json();
                 
+                const threshold = levelsMap[levelSelect.value] || 20;
+
                 logs.forEach(log => {
                     lastLogTimestamp = Math.max(lastLogTimestamp, log.timestamp);
                     
                     const timeStr = new Date(log.timestamp * 1000).toLocaleTimeString();
                     const entry = document.createElement("div");
                     entry.className = "log-entry";
+                    entry.setAttribute("data-level", log.level);
+                    
+                    // Determine visibility immediately based on current log level threshold
+                    const entryVal = levelsMap[log.level] || 20;
+                    if (entryVal >= threshold) {
+                        entry.style.display = "flex";
+                    } else {
+                        entry.style.display = "none";
+                    }
+
                     entry.innerHTML = `
                         <span class="log-time">[${timeStr}]</span>
                         <span class="log-level ${log.level}">${log.level}</span>

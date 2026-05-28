@@ -15,6 +15,10 @@ class CursesMonitor:
         self.logs = []
         self.max_logs = 100
         self.last_timestamp = 0.0
+        # Supported display levels and current filter index
+        self.levels_list = ["DEBUG", "INFO", "WARNING", "ERROR"]
+        self.level_index = 1  # Default to INFO
+        self.levels_map = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 
     def load_latest_data(self):
         """Reads latest values from SQLite telemetry database."""
@@ -160,12 +164,20 @@ class CursesMonitor:
             # Right pane: Active Logs Console
             log_start_col = col_width + 4
             log_width = width - log_start_col - 4
-            stdscr.addstr(2, log_start_col, "══ SYSTEM ACTIVE LOGS 📜 ══════════════════════", curses.color_pair(1) | curses.A_BOLD)
+            current_level_name = self.levels_list[self.level_index]
+            stdscr.addstr(2, log_start_col, f"══ LOGS [{current_level_name}+] 📜 ═══════════════", curses.color_pair(1) | curses.A_BOLD)
             
             # Print latest logs
             log_row = 4
             max_log_rows = height - 8
-            visible_logs = self.logs[-max_log_rows:] if len(self.logs) > max_log_rows else self.logs
+            
+            # Filter logs based on selected severity value
+            current_threshold = self.levels_map.get(current_level_name, 20)
+            filtered_logs = [
+                (ts, lvl, msg) for ts, lvl, msg in self.logs 
+                if self.levels_map.get(lvl, 20) >= current_threshold
+            ]
+            visible_logs = filtered_logs[-max_log_rows:] if len(filtered_logs) > max_log_rows else filtered_logs
             
             for timestamp, level, msg in reversed(visible_logs):
                 if log_row < height - 4:
@@ -174,6 +186,8 @@ class CursesMonitor:
                         col = curses.color_pair(4) | curses.A_BOLD
                     elif level == "WARNING":
                         col = curses.color_pair(3) | curses.A_BOLD
+                    elif level == "DEBUG":
+                        col = curses.A_DIM
                     else:
                         col = curses.color_pair(2)
                         
@@ -184,7 +198,7 @@ class CursesMonitor:
                     log_row += 1
 
             # Status Footer Help Bar
-            stdscr.addstr(height - 2, 2, "Press 'q' or 'Ctrl+C' to exit monitor console", curses.A_DIM)
+            stdscr.addstr(height - 2, 2, "Press 'l' to toggle Log Levels (DEBUG/INFO/WARN/ERROR) | 'q' to exit", curses.A_DIM)
             stdscr.refresh()
 
             # Input check
@@ -192,6 +206,8 @@ class CursesMonitor:
                 ch = stdscr.getch()
                 if ch == ord('q') or ch == ord('Q'):
                     self.running = False
+                elif ch == ord('l') or ch == ord('L'):
+                    self.level_index = (self.level_index + 1) % len(self.levels_list)
             except Exception:
                 pass
 
