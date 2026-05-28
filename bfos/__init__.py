@@ -19,6 +19,7 @@ from .replayer import Replayer
 _default_bus: Optional[SpannerBus] = None
 _default_status_tracker: Optional[StatusTracker] = None
 _default_recorder: Optional[Recorder] = None
+_default_config: Optional[Config] = None
 
 def get_bus() -> SpannerBus:
     """Gets or lazily instantiates the global shared SpannerBus."""
@@ -33,6 +34,13 @@ def get_status_tracker(prefix: str = "status") -> StatusTracker:
     if _default_status_tracker is None:
         _default_status_tracker = StatusTracker(get_bus(), prefix=prefix)
     return _default_status_tracker
+
+def get_config(filepath: str = "config.json") -> Config:
+    """Gets or lazily instantiates the global shared Config object."""
+    global _default_config
+    if _default_config is None:
+        _default_config = Config(filepath, get_bus())
+    return _default_config
 
 def get_logger(name: Optional[str] = None, level: int = std_logging.INFO) -> std_logging.Logger:
     """
@@ -89,6 +97,7 @@ __all__ = [
     "Replayer",
     "get_bus",
     "get_status_tracker",
+    "get_config",
     "get_logger",
     "set_status",
     "get_status",

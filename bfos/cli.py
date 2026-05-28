@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 class CursesMonitor:
     def __init__(self, db_path: str):
@@ -15,10 +15,87 @@ class CursesMonitor:
         self.logs = []
         self.max_logs = 100
         self.last_timestamp = 0.0
+        
         # Supported display levels and current filter index
         self.levels_list = ["DEBUG", "INFO", "WARNING", "ERROR"]
         self.level_index = 1  # Default to INFO
         self.levels_map = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
+
+        # Collapsible tree configurations
+        self.configs: Dict[str, Any] = {}
+        self.collapsed_configs = set()
+        self.config_selected_index = 0
+        self.confirming_clear = False
+
+        # Seed local configurations initially from standard files if present
+        for cfg_file in ["system_monitor_config.json", "config.json"]:
+            if os.path.exists(cfg_file):
+                try:
+                    with open(cfg_file, "r") as f:
+                        data = json.load(f)
+                        for k, v in data.items():
+                            self.configs[k] = v
+                except Exception:
+                    pass
+
+    def get_config_tree_lines(self) -> List[Dict[str, Any]]:
+        """Parses flat configurations and builds a sorted, collapsible tree structure."""
+        tree = {}
+        for key, val in self.configs.items():
+            parts = key.split("/")
+            curr = tree
+            for part in parts[:-1]:
+                if part not in curr:
+                    curr[part] = {}
+                curr = curr[part]
+            curr[parts[-1]] = val
+
+        lines = []
+        def traverse(node: dict, current_path_parts: list, depth: int):
+            for name in sorted(node.keys()):
+                val = node[name]
+                path_parts = current_path_parts + [name]
+                full_path = "/".join(path_parts)
+                if isinstance(val, dict):
+                    collapsed = full_path in self.collapsed_configs
+                    lines.append({
+                        "full_path": full_path,
+                        "name": name,
+                        "is_namespace": True,
+                        "depth": depth,
+                        "collapsed": collapsed
+                    })
+                    if not collapsed:
+                        traverse(val, path_parts, depth + 1)
+                else:
+                    lines.append({
+                        "full_path": full_path,
+                        "name": name,
+                        "is_namespace": False,
+                        "depth": depth,
+                        "value": val
+                    })
+        traverse(tree, [], 0)
+        return lines
+
+    def clear_database(self) -> bool:
+        """Atomically clear all telemetry and log rows from the database."""
+        if not os.path.exists(self.db_path):
+            return False
+        try:
+            # Use read-write connection to clear and vacuum database
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("DELETE FROM telemetry;")
+            conn.execute("VACUUM;")
+            conn.commit()
+            conn.close()
+            # Clear local CLI state caches instantly
+            self.telemetry_data.clear()
+            self.logs.clear()
+            self.last_timestamp = 0.0
+            return True
+        except Exception:
+            return False
 
     def load_latest_data(self):
         """Reads latest values from SQLite telemetry database."""
@@ -26,26 +103,35 @@ class CursesMonitor:
             return
 
         try:
-            # Connect in read-only mode to prevent lock conflicts with the running system recorder
+            # Connect in read-only mode to prevent lock conflicts
             conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
             cursor = conn.cursor()
             
-            # 1. Fetch all latest states for status topics
+            # 1. Fetch latest states for status & config topics
             cursor.execute("""
                 SELECT t1.topic, t1.payload, t1.timestamp
                 FROM telemetry t1
                 INNER JOIN (
                     SELECT topic, MAX(id) as max_id
                     FROM telemetry
-                    WHERE topic LIKE 'status/%'
+                    WHERE topic LIKE 'status/%' OR topic LIKE 'config/changed/%'
                     GROUP BY topic
                 ) t2 ON t1.id = t2.max_id;
             """)
             for topic, payload, timestamp in cursor.fetchall():
                 try:
-                    self.telemetry_data[topic] = json.loads(payload)
+                    parsed_payload = json.loads(payload)
                 except Exception:
-                    self.telemetry_data[topic] = payload
+                    parsed_payload = payload
+
+                if topic.startswith("config/changed/"):
+                    config_key = topic[15:]
+                    if isinstance(parsed_payload, dict) and "new_value" in parsed_payload:
+                        self.configs[config_key] = parsed_payload["new_value"]
+                    else:
+                        self.configs[config_key] = parsed_payload
+                elif topic.startswith("status/"):
+                    self.telemetry_data[topic] = parsed_payload
 
             # 2. Fetch new log items chronologically
             cursor.execute("""
@@ -74,16 +160,16 @@ class CursesMonitor:
             
             conn.close()
         except sqlite3.OperationalError:
-            # DB might be temporarily locked or initializing, ignore gracefully
+            # DB might be temporarily locked, ignore gracefully
             pass
-        except Exception as e:
-            # Just ignore log/read issues to keep monitor loop resilient
+        except Exception:
             pass
 
     def draw_screen(self, stdscr):
         """Main redraw curses execution logic."""
         curses.curs_set(0)  # Hide cursor
         stdscr.nodelay(True)  # Non-blocking input reads
+        stdscr.keypad(True)  # Enable keypad support for Arrows
         curses.start_color()
         curses.use_default_colors()
         
@@ -148,18 +234,32 @@ class CursesMonitor:
                 stdscr.addstr(row, 25, f"{display_val:<15}", color | curses.A_BOLD)
                 row += 1
 
-            # Render generic status updates not in monitor list
-            stdscr.addstr(row + 1, 2, "══ GENERAL TELEMETRY 📡 ════════════════════════", curses.color_pair(1) | curses.A_BOLD)
-            row_gen = row + 3
-            count_gen = 0
-            for topic, data in sorted(self.telemetry_data.items()):
-                if not topic.startswith("status/monitor/") and count_gen < 6:
-                    val = data.get("value", data) if isinstance(data, dict) else data
-                    label = topic.replace("status/", "")
-                    stdscr.addstr(row_gen, 3, f"{label[:22]:<22}: ")
-                    stdscr.addstr(row_gen, 25, f"{str(val)[:15]:<15}", curses.color_pair(5))
-                    row_gen += 1
-                    count_gen += 1
+            # Render Configurations Collapsible Tree
+            config_start_row = row + 1
+            stdscr.addstr(config_start_row, 2, "══ CONFIGURATIONS ⚙️ ═════════════════════════", curses.color_pair(1) | curses.A_BOLD)
+            
+            tree_lines = self.get_config_tree_lines()
+            
+            # Clamp selection bounds
+            if self.config_selected_index >= len(tree_lines):
+                self.config_selected_index = max(0, len(tree_lines) - 1)
+                
+            config_row = config_start_row + 2
+            max_config_rows = height - config_row - 4
+            
+            for i, line in enumerate(tree_lines[:max_config_rows]):
+                indent = "  " * line["depth"]
+                is_selected = (i == self.config_selected_index)
+                style = curses.A_REVERSE if is_selected else curses.A_NORMAL
+                
+                if line["is_namespace"]:
+                    prefix = "▶ " if line["collapsed"] else "▼ "
+                    text = f"{indent}{prefix}{line['name']}"
+                    stdscr.addstr(config_row, 3, f"{text:<35}", style | curses.color_pair(5) | curses.A_BOLD)
+                else:
+                    text = f"{indent}• {line['name']}: {line['value']}"
+                    stdscr.addstr(config_row, 3, f"{text:<35}", style | curses.color_pair(2))
+                config_row += 1
 
             # Right pane: Active Logs Console
             log_start_col = col_width + 4
@@ -181,7 +281,6 @@ class CursesMonitor:
             
             for timestamp, level, msg in reversed(visible_logs):
                 if log_row < height - 4:
-                    # Select color based on severity level
                     if level == "ERROR":
                         col = curses.color_pair(4) | curses.A_BOLD
                     elif level == "WARNING":
@@ -193,21 +292,48 @@ class CursesMonitor:
                         
                     time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
                     log_line = f"[{time_str}] [{level[:4]}] {msg}"
-                    # Truncate to fit terminal screen nicely
                     stdscr.addstr(log_row, log_start_col + 1, log_line[:log_width], col)
                     log_row += 1
 
-            # Status Footer Help Bar
-            stdscr.addstr(height - 2, 2, "Press 'l' to toggle Log Levels (DEBUG/INFO/WARN/ERROR) | 'q' to exit", curses.A_DIM)
+            # Help Bar & Prompts
+            if self.confirming_clear:
+                prompt_str = " ⚠️  CONFIRM CLEAR DATABASE? All recorded telemetry rows will be deleted. (y/N): "
+                # Render in red reversed alert style
+                stdscr.addstr(height - 2, 2, f"{prompt_str:<76}", curses.color_pair(4) | curses.A_BOLD | curses.A_REVERSE)
+            else:
+                stdscr.addstr(height - 2, 2, "Arrows/WS: Select | Space/Enter: Expand | L: Level | C: Clear DB | Q: Exit", curses.A_DIM)
+                
             stdscr.refresh()
 
             # Input check
             try:
                 ch = stdscr.getch()
-                if ch == ord('q') or ch == ord('Q'):
-                    self.running = False
-                elif ch == ord('l') or ch == ord('L'):
-                    self.level_index = (self.level_index + 1) % len(self.levels_list)
+                if self.confirming_clear:
+                    if ch in [ord('y'), ord('Y')]:
+                        self.clear_database()
+                        self.confirming_clear = False
+                    elif ch in [ord('n'), ord('N'), 27]: # Esc or N/n
+                        self.confirming_clear = False
+                else:
+                    if ch == ord('q') or ch == ord('Q'):
+                        self.running = False
+                    elif ch == ord('l') or ch == ord('L'):
+                        self.level_index = (self.level_index + 1) % len(self.levels_list)
+                    elif ch == ord('c') or ch == ord('C'):
+                        self.confirming_clear = True
+                    elif ch in [curses.KEY_UP, ord('w'), ord('W')]:
+                        self.config_selected_index = max(0, self.config_selected_index - 1)
+                    elif ch in [curses.KEY_DOWN, ord('s'), ord('S')]:
+                        self.config_selected_index = min(len(tree_lines) - 1, self.config_selected_index + 1)
+                    elif ch in [10, 13, 32]: # Enter/Space
+                        if tree_lines and 0 <= self.config_selected_index < len(tree_lines):
+                            node = tree_lines[self.config_selected_index]
+                            if node["is_namespace"]:
+                                path = node["full_path"]
+                                if path in self.collapsed_configs:
+                                    self.collapsed_configs.remove(path)
+                                else:
+                                    self.collapsed_configs.add(path)
             except Exception:
                 pass
 
@@ -220,7 +346,6 @@ def main():
 
     monitor = CursesMonitor(db_path)
     
-    # Initialize and wrap with standard curses terminal handler
     try:
         curses.wrapper(monitor.draw_screen)
     except KeyboardInterrupt:
