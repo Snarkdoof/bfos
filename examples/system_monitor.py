@@ -3,18 +3,17 @@ import os
 import sys
 import shutil
 import logging
-import time
 
 # Ensure parent directory is in sys.path so bfos module is findable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bfos import SpannerBus, StatusTracker, Recorder, setup_logging
+import bfos
 
-# Configure logging to go both to stdout and to the bus structured
-logger = logging.getLogger("system_monitor")
+# Get a pre-configured logger that automatically publishes standard logs directly to the BFOS bus
+logger = bfos.get_logger("system_monitor")
 
-async def monitor_loop(bus: SpannerBus, status: StatusTracker):
-    """Periodically queries system health and publishes updates to the SpannerBus."""
+async def monitor_loop():
+    """Periodically queries system health and publishes updates directly via the zero-scaffolding API."""
     logger.info("System health monitoring started.")
     logger.info("Monitoring root disk partition at '/'")
     
@@ -51,19 +50,18 @@ async def monitor_loop(bus: SpannerBus, status: StatusTracker):
             total_disk, used_disk, free_disk = shutil.disk_usage("/")
             disk_used_pct = round((used_disk / total_disk) * 100.0, 2) if total_disk > 0 else 0
 
-            # Update telemetry values on the bus
-            # StatusTracker publishes on the bus ONLY if these values have changed!
-            await status.set("memory/total_bytes", total_mem)
-            await status.set("memory/free_bytes", free_mem)
-            await status.set("memory/used_percent", mem_used_pct)
+            # Update telemetry values using the simple high-level API
+            await bfos.set_status("memory/total_bytes", total_mem)
+            await bfos.set_status("memory/free_bytes", free_mem)
+            await bfos.set_status("memory/used_percent", mem_used_pct)
             
-            await status.set("cpu/load_1m", cpu_load[0])
-            await status.set("cpu/load_5m", cpu_load[1])
-            await status.set("cpu/load_15m", cpu_load[2])
+            await bfos.set_status("cpu/load_1m", cpu_load[0])
+            await bfos.set_status("cpu/load_5m", cpu_load[1])
+            await bfos.set_status("cpu/load_15m", cpu_load[2])
             
-            await status.set("disk/total_bytes", total_disk)
-            await status.set("disk/free_bytes", free_disk)
-            await status.set("disk/used_percent", disk_used_pct)
+            await bfos.set_status("disk/total_bytes", total_disk)
+            await bfos.set_status("disk/free_bytes", free_disk)
+            await bfos.set_status("disk/used_percent", disk_used_pct)
 
         except Exception as e:
             logger.error(f"Error querying system health statistics: {e}", exc_info=True)
@@ -71,34 +69,23 @@ async def monitor_loop(bus: SpannerBus, status: StatusTracker):
         await asyncio.sleep(2.0)
 
 async def main():
-    # Setup bus and redirect standard logging output directly onto the bus log topics
-    bus = SpannerBus()
-    setup_logging(bus, level=logging.INFO)
-
-    # Status tracker prefixes all variables with status/monitor/
-    status = StatusTracker(bus, prefix="status/monitor")
-
-    # Define simple watcher to show real-time bus telemetry
+    # Watch system error logs and status variables
     async def console_watcher(topic, payload):
         print(f"📡 [BUS TELEMETRY] {topic} -> {payload}")
 
+    bus = bfos.get_bus()
     # Watch all status variables as they stream live
     bus.subscribe("status/monitor/#", console_watcher)
     # Also watch system error logs
     bus.subscribe("log/ERROR", console_watcher)
 
-    # Setup the SQLite recorder with a 10-second data retention period (Keep it small for testing)
-    # For a robotic mower, you'd set retention_seconds = 7 * 24 * 3600 (1 week)
     db_file = "system_monitor.db"
     retention_time = 10.0  # Keep only the last 10 seconds of logs to prevent disk clutter!
     
-    logger.info("Starting System Health Monitor...")
-    logger.info(f"Recording to database '{db_file}' with {retention_time}s dynamic retention limit")
-    print("Press Ctrl+C to terminate and inspect the database file.")
-
-    async with Recorder(db_file, bus, retention_seconds=retention_time) as recorder:
+    # Run the high-level BFOS scaffolding with automated recording & retention
+    async with bfos.run(db_path=db_file, retention_seconds=retention_time, status_prefix="status/monitor"):
         try:
-            await monitor_loop(bus, status)
+            await monitor_loop()
         except asyncio.CancelledError:
             print("\nShutting down monitor loop...")
 
