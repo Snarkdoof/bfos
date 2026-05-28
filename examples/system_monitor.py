@@ -16,6 +16,7 @@ logger = logging.getLogger("system_monitor")
 async def monitor_loop(bus: SpannerBus, status: StatusTracker):
     """Periodically queries system health and publishes updates to the SpannerBus."""
     logger.info("System health monitoring started.")
+    logger.info("Monitoring root disk partition at '/'")
     
     while True:
         try:
@@ -63,11 +64,6 @@ async def monitor_loop(bus: SpannerBus, status: StatusTracker):
             await status.set("disk/total_bytes", total_disk)
             await status.set("disk/free_bytes", free_disk)
             await status.set("disk/used_percent", disk_used_pct)
-
-            # Log a info notification
-            logger.info(
-                f"Status update: CPU 1m={cpu_load[0]} | Mem Used={mem_used_pct}% | Disk Free={free_disk // (1024**3)} GB"
-            )
 
         except Exception as e:
             logger.error(f"Error querying system health statistics: {e}", exc_info=True)
