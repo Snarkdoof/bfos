@@ -12,13 +12,34 @@ import bfos
 # Get a pre-configured logger that automatically publishes standard logs directly to the BFOS bus
 logger = bfos.get_logger("system_monitor")
 
+# Initialize and get the configuration manager
+config = bfos.get_config("system_monitor_config.json")
+
+# Seed standard configuration defaults if they do not exist
+if config.get("loop_interval") is None:
+    config.set("loop_interval", 2.0)
+if config.get("mount_point") is None:
+    config.set("mount_point", "/")
+
 async def monitor_loop():
     """Periodically queries system health and publishes updates directly via the zero-scaffolding API."""
     logger.info("System health monitoring started.")
-    logger.info("Monitoring root disk partition at '/'")
+    
+    last_mount_point = None
     
     while True:
         try:
+            # Dynamically read config values on each iteration to support on-the-fly changes
+            loop_interval = float(config.get("loop_interval", 2.0))
+            mount_point = str(config.get("mount_point", "/"))
+
+            # Log change in mount point configuration if modified
+            if mount_point != last_mount_point:
+                if last_mount_point is not None:
+                    logger.warning(f"Mount point changed from '{last_mount_point}' to '{mount_point}'")
+                logger.info(f"Monitoring disk partition at '{mount_point}'")
+                last_mount_point = mount_point
+
             # 1. Gather Free Memory and Total Memory (cross-platform fallback)
             free_mem = 0
             total_mem = 0
@@ -47,7 +68,7 @@ async def monitor_loop():
                 cpu_load = [round(random.uniform(0.1, 2.0), 2) for _ in range(3)]
 
             # 3. Gather Disk Space
-            total_disk, used_disk, free_disk = shutil.disk_usage("/")
+            total_disk, used_disk, free_disk = shutil.disk_usage(mount_point)
             disk_used_pct = round((used_disk / total_disk) * 100.0, 2) if total_disk > 0 else 0
 
             # Update telemetry values using the simple high-level API
@@ -66,7 +87,7 @@ async def monitor_loop():
         except Exception as e:
             logger.error(f"Error querying system health statistics: {e}", exc_info=True)
 
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(loop_interval)
 
 async def main():
     # Watch system error logs and status variables
