@@ -92,8 +92,8 @@ async def main():
     db_file = "system_monitor.db"
     retention_time = 10.0  # Keep only the last 10 seconds of logs to prevent disk clutter!
     
-    print(f"\n🚀 Starting System Health Monitor...")
-    print(f"💾 Recording to database '{db_file}' with {retention_time}s dynamic retention limit")
+    logger.info("Starting System Health Monitor...")
+    logger.info(f"Recording to database '{db_file}' with {retention_time}s dynamic retention limit")
     print("Press Ctrl+C to terminate and inspect the database file.")
 
     async with Recorder(db_file, bus, retention_seconds=retention_time) as recorder:
