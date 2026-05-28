@@ -56,6 +56,13 @@ class Recorder:
         self._conn.commit()
         logger.info("Initialized SQLite telemetry recording database at '%s'", self._db_path)
 
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
+
     async def start(self) -> None:
         """Start recording bus events to the SQLite database."""
         if self._running:

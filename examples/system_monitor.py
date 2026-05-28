@@ -87,9 +87,9 @@ async def main():
         print(f"📡 [BUS TELEMETRY] {topic} -> {payload}")
 
     # Watch all status variables as they stream live
-    await bus.subscribe("status/monitor/#", console_watcher)
+    bus.subscribe("status/monitor/#", console_watcher)
     # Also watch system error logs
-    await bus.subscribe("log/ERROR", console_watcher)
+    bus.subscribe("log/ERROR", console_watcher)
 
     # Setup the SQLite recorder with a 10-second data retention period (Keep it small for testing)
     # For a robotic mower, you'd set retention_seconds = 7 * 24 * 3600 (1 week)
